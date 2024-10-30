@@ -4,73 +4,129 @@
 #include <unordered_map>
 #include <iomanip>
 #include <random>
+#include <future>
 #include <cstdlib>
 #include <cassert>
 #include "clicker.hh"
 
-size_t threeN(const size_t * data, size_t s)
+template< class It, class F >
+size_t omp_parallel(F f, It data, size_t s)
 {
-  size_t results = 0;
-  #pragma omp parallel for reduction(+:results)
+  size_t res = 0;
+  #pragma omp parallel for reduction(+:res)
   for (size_t i = 0; i < s; ++i)
   {
-    size_t v = data[i];
-    size_t next = 0;
-    while (v != 1)
+    res += f(data[i], i);
+  }
+  return res;
+}
+
+template< class It, class F >
+size_t future_loop(F f, It data, size_t start, size_t size)
+{
+  size_t res = 0;
+  for (size_t i = start; i < (start + size); ++i)
+  {
+    res += f(data[i], i);
+  }
+  return res;
+}
+
+template< class It, class F >
+size_t future_parallel(size_t thrs, F f, It data, size_t s)
+{
+  std::vector< std::future< size_t > > futures;
+  futures.reserve(thrs - 1);
+  size_t per_th = s / thrs;
+  for (size_t i = 0; i < thrs - 1; ++i)
+  {
+    futures.emplace_back(
+      std::async(future_loop< It, F >, f, data, i * per_th, per_th)
+    );
+  }
+  size_t last_th = (thrs - 1) * per_th;
+  auto res = future_loop(f, data, last_th, s - last_th);
+  for (auto && ft: futures)
+  {
+    res += ft.get();
+  }
+  return res;
+}
+
+size_t threen_calc(size_t v, size_t)
+{
+  size_t next = 0;
+  while (v != 1)
+  {
+    if (v % 2)
     {
-      if (v % 2)
-      {
-	v = 3 * v + 1;
-      }
-      else
-      {
-	v /= 2;
-      }
-      ++next;
+      v = 3 * v + 1;
     }
-    results += next;
+    else
+    {
+      v /= 2;
+    }
+    ++next;
   }
-  return results;
+  return next;
+}
+size_t wo(size_t & v, size_t i)
+{
+  return v = i;
+}
+size_t ro(size_t v, size_t)
+{
+  return v;
 }
 
-size_t write_only(size_t * data, size_t s)
+size_t threeN(size_t thrs, const size_t * data, size_t s)
 {
-  size_t sum = 0;
-  #pragma omp parallel for reduction(+:sum)
-  for (size_t i = 0; i < s; ++i)
-  {
-    sum += data[i] = i;
-  }
-  return sum;
+  return future_parallel(thrs, threen_calc, data, s);
+}
+size_t omp_threeN(const size_t * data, size_t s)
+{
+  return omp_parallel(threen_calc, data, s);
 }
 
-size_t read_only(const size_t * data, size_t s)
+size_t write_only(size_t thrs, size_t * data, size_t s)
 {
-  int sum = 0;
-  #pragma omp parallel for reduction(+: sum)
-  for (size_t i = 0; i < s; ++i)
-  {
-    sum += data[i];
-  }
-  return sum;
+  return future_parallel(thrs, wo, data, s);
+}
+
+size_t read_only(size_t thrs, const size_t * data, size_t s)
+{
+  return future_parallel(thrs, ro, data, s);
 }
 
 int main(int argc, char ** argv)
 {
-  assert((argc == 3 || argc == 4) && "size of seq expected and t, w or r");
+  assert((argc == 3 || argc == 4)
+    && "size of seq expected and ti, wi, ri or o12");
   size_t vals = std::strtoull(argv[1], nullptr, 10);
   std::string mode = argv[2];
-  std::unordered_map< std::string, std::function< decltype(write_only) > > hmap;
-  hmap["r"] = read_only;
-  hmap["t"] = threeN;
-  hmap["w"] = write_only;
+  using f_t = std::function< size_t(size_t *, size_t) >;
+  std::unordered_map< std::string, f_t > hmap;
+  using namespace std::placeholders;
+  hmap["r1"] = std::bind(read_only, 1, _1, _2);
+  hmap["r2"] = std::bind(read_only, 2, _1, _2);
+  hmap["r6"] = std::bind(read_only, 6, _1, _2);
+  hmap["r12"] = std::bind(read_only, 12, _1, _2);
+  hmap["t1"] = std::bind(threeN, 1, _1, _2);
+  hmap["t2"] = std::bind(threeN, 2, _1, _2);
+  hmap["t6"] = std::bind(threeN, 6, _1, _2);
+  hmap["t12"] = std::bind(threeN, 12, _1, _2);
+  hmap["w1"] = std::bind(write_only, 1, _1, _2);
+  hmap["w2"] = std::bind(write_only, 2, _1, _2);
+  hmap["w6"] = std::bind(write_only, 6, _1, _2);
+  hmap["w12"] = std::bind(write_only, 12, _1, _2);
+  hmap["o12"] = omp_threeN;
   try
   {
     hmap.at(mode);
   }
   catch (...)
   {
-    std::cerr << "Wrong mode (t, w or r)\n";
+    std::cerr << "Wrong mode\n";
     return 1;
   }
   std::vector< size_t > data(vals, 0);
