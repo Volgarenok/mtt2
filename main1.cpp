@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <random>
 #include <future>
+#include <functional>
 #include <cstdlib>
 #include <cassert>
 #include "clicker.hh"
